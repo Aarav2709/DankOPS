@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import logging
+from pathlib import Path
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from .config import AppConfig, load_config
+from .engine import FarmEngine
+
+
+class DankOpsBot(commands.Bot):
+    def __init__(self, config_path: Path):
+        intents = discord.Intents.default()
+        intents.guilds = True
+        intents.messages = True
+        super().__init__(command_prefix="!", intents=intents)
+        self.config_path = config_path
+        self.config: AppConfig = load_config(config_path)
+        self.engine = FarmEngine(self.config, self._send_farm_message)
+        self.log = logging.getLogger("dankops")
+
+    async def setup_hook(self) -> None:
+        self.tree.add_command(StartFarm())
+        self.tree.add_command(StopFarm())
+        self.tree.add_command(FarmStatus())
+        self.tree.add_command(RunCommandOnce())
+        self.tree.add_command(ReloadConfig())
+        await self.tree.sync()
+
+    async def on_ready(self) -> None:
+        self.log.info("Connected as %s", self.user)
+        await self.change_presence(status=self._presence_value())
+        if self.config.auto_start:
+            await self.engine.start()
+            await self._post_status("Farm engine auto start enabled and running")
+
+    async def close(self) -> None:
+        await self.engine.stop()
+        await super().close()
+
+    async def _send_farm_message(self, content: str) -> None:
+        channel = self.get_channel(self.config.target_channel_id)
+        if channel is None:
+            channel = await self.fetch_channel(self.config.target_channel_id)
+        if not isinstance(channel, discord.abc.Messageable):
+            raise RuntimeError("Target channel is not messageable")
+        await channel.send(content)
+
+    async def _post_status(self, content: str) -> None:
+        status_channel_id = self.config.status_channel_id or self.config.target_channel_id
+        channel = self.get_channel(status_channel_id)
+        if channel is None:
+            channel = await self.fetch_channel(status_channel_id)
+        if isinstance(channel, discord.abc.Messageable):
+            await channel.send(content)
+
+    def _presence_value(self) -> discord.Status:
+        options = {
+            "online": discord.Status.online,
+            "idle": discord.Status.idle,
+            "dnd": discord.Status.dnd,
+            "invisible": discord.Status.invisible,
+        }
+        return options.get(self.config.presence.lower(), discord.Status.online)
+
+    def is_owner(self, user_id: int) -> bool:
+        return self.config.owner_user_id == 0 or self.config.owner_user_id == user_id
+
+
+class OwnerOnlyCommand(app_commands.Command):
+    async def _check_owner(self, interaction: discord.Interaction) -> bool:
+        bot = interaction.client
+        if not isinstance(bot, DankOpsBot):
+            return False
+        return bot.is_owner(interaction.user.id)
+
+
+class StartFarm(OwnerOnlyCommand):
+    def __init__(self) -> None:
+        super().__init__(name="farm_start", description="Start scheduler")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot = interaction.client
+        if not isinstance(bot, DankOpsBot):
+            return
+        if not await self._check_owner(interaction):
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        started = await bot.engine.start()
+        if started:
+            await interaction.response.send_message("Scheduler started")
+        else:
+            await interaction.response.send_message("Scheduler is already running", ephemeral=True)
+
+
+class StopFarm(OwnerOnlyCommand):
+    def __init__(self) -> None:
+        super().__init__(name="farm_stop", description="Stop scheduler")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot = interaction.client
+        if not isinstance(bot, DankOpsBot):
+            return
+        if not await self._check_owner(interaction):
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        stopped = await bot.engine.stop()
+        if stopped:
+            await interaction.response.send_message("Scheduler stopped")
+        else:
+            await interaction.response.send_message("Scheduler was not running", ephemeral=True)
+
+
+class FarmStatus(OwnerOnlyCommand):
+    def __init__(self) -> None:
+        super().__init__(name="farm_status", description="Show scheduler state")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot = interaction.client
+        if not isinstance(bot, DankOpsBot):
+            return
+        if not await self._check_owner(interaction):
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        stats = bot.engine.get_stats()
+        now = dt.datetime.utcnow().isoformat(timespec="seconds")
+        body = [
+            f"UTC: {now}",
+            f"running: {stats.running}",
+            f"on_break: {stats.on_break}",
+            f"sent_total: {stats.sent_total}",
+        ]
+        for name, count in sorted(stats.sent_by_command.items()):
+            body.append(f"{name}: {count}")
+        await interaction.response.send_message("\n".join(body), ephemeral=True)
+
+
+class RunCommandOnce(OwnerOnlyCommand):
+    def __init__(self) -> None:
+        super().__init__(name="farm_run_once", description="Run one enabled command once")
+        self._param = app_commands.describe(command_name="Configured command key")
+
+    @app_commands.describe(command_name="Configured command key")
+    async def callback(self, interaction: discord.Interaction, command_name: str) -> None:
+        bot = interaction.client
+        if not isinstance(bot, DankOpsBot):
+            return
+        if not await self._check_owner(interaction):
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        ok = await bot.engine.run_once(command_name)
+        if ok:
+            await interaction.response.send_message(f"Executed {command_name}")
+        else:
+            await interaction.response.send_message(f"Command {command_name} is missing or disabled", ephemeral=True)
+
+
+class ReloadConfig(OwnerOnlyCommand):
+    def __init__(self) -> None:
+        super().__init__(name="farm_reload", description="Reload config from disk")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot = interaction.client
+        if not isinstance(bot, DankOpsBot):
+            return
+        if not await self._check_owner(interaction):
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
+        bot.config = load_config(bot.config_path)
+        bot.engine.update_config(bot.config)
+        await bot.change_presence(status=bot._presence_value())
+        await interaction.response.send_message("Config reloaded")
+
+
+def run_bot(config_path: Path) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    cfg = load_config(config_path)
+    if not cfg.bot_token.strip():
+        raise RuntimeError("bot_token is empty in config")
+    bot = DankOpsBot(config_path)
+    bot.run(cfg.bot_token)
+
+
+async def run_bot_async(config_path: Path) -> None:
+    cfg = load_config(config_path)
+    if not cfg.bot_token.strip():
+        raise RuntimeError("bot_token is empty in config")
+    bot = DankOpsBot(config_path)
+    async with bot:
+        await bot.start(cfg.bot_token)
