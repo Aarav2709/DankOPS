@@ -36,6 +36,11 @@ class AppConfig:
     break_duration_max_minutes: float = 25.0
     command_interval: CooldownWindow = field(default_factory=CooldownWindow)
     commands: dict[str, CommandProfile] = field(default_factory=dict)
+    ui_dark_mode: bool = False
+    use_message_content_intent: bool = False
+    # If enabled, after sending a command the bot will wait for a Dank Memer reply
+    wait_for_reply_enabled: bool = False
+    wait_for_reply_timeout_seconds: float = 12.0
 
 
 def default_commands() -> dict[str, CommandProfile]:
@@ -98,6 +103,10 @@ def _config_from_any(raw: dict[str, Any]) -> AppConfig:
         break_duration_max_minutes=float(raw.get("break_duration_max_minutes", base.break_duration_max_minutes)),
         command_interval=_window_from_any(raw.get("command_interval", {})),
         commands=commands,
+        ui_dark_mode=bool(raw.get("ui_dark_mode", base.ui_dark_mode)),
+        use_message_content_intent=bool(raw.get("use_message_content_intent", base.use_message_content_intent)),
+        wait_for_reply_enabled=bool(raw.get("wait_for_reply_enabled", base.wait_for_reply_enabled)),
+        wait_for_reply_timeout_seconds=float(raw.get("wait_for_reply_timeout_seconds", base.wait_for_reply_timeout_seconds)),
     )
     return normalize_config(config)
 

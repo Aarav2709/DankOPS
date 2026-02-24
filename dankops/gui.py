@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, font as tkfont
 
 from .config import AppConfig, CommandProfile, load_config, save_config
 
@@ -55,11 +55,13 @@ class ConfigGui:
         self.fields["target_channel_id"] = tk.StringVar(value=str(self.config.target_channel_id))
         # Hidden fields `status_channel_id`, `presence`, `webhook_url` are preserved but not exposed in GUI
         self.fields["auto_start"] = tk.BooleanVar(value=self.config.auto_start)
+        self.fields["ui_dark_mode"] = tk.BooleanVar(value=self.config.ui_dark_mode)
         self._add_row(frame, 0, "Bot Token", self.fields["bot_token"])
         self._add_row(frame, 1, "Owner User ID", self.fields["owner_user_id"])
         self._add_row(frame, 2, "Target Channel ID", self.fields["target_channel_id"])
         # status_channel_id, presence and webhook_url are intentionally hidden in this UI
         ttk.Checkbutton(frame, text="Auto Start Scheduler", variable=self.fields["auto_start"]).grid(row=5, column=1, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(frame, text="Dark Mode", variable=self.fields["ui_dark_mode"], command=self._apply_theme).grid(row=6, column=1, sticky="w", padx=8, pady=6)
 
     def _build_scheduler(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(1, weight=1)
@@ -186,6 +188,9 @@ class ConfigGui:
 
     def _save(self) -> None:
         try:
+            var_dark = self.fields.get("ui_dark_mode")
+            ui_dark = bool(var_dark.get()) if var_dark is not None else bool(self.config.ui_dark_mode)
+
             cfg = AppConfig(
                 bot_token=str(self.fields["bot_token"].get()).strip(),
                 owner_user_id=self._coerce_int("owner_user_id"),
@@ -195,6 +200,7 @@ class ConfigGui:
                 presence=self.config.presence,
                 webhook_url=self.config.webhook_url,
                 auto_start=bool(self.fields["auto_start"].get()),
+                ui_dark_mode=ui_dark,
                 break_mode=bool(self.fields["break_mode"].get()),
                 break_after_min_minutes=self._coerce_float("break_after_min_minutes"),
                 break_after_max_minutes=self._coerce_float("break_after_max_minutes"),
@@ -217,7 +223,44 @@ class ConfigGui:
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         self.log_path = Path("logs/dankops.log")
         self._log_pos = 0
+        # configure tags for basic markdown using proper Font objects
+        try:
+            bold_font = tkfont.Font(self.log_text, self.log_text.cget("font"))
+            bold_font.configure(weight="bold")
+            code_font = tkfont.Font(self.log_text, self.log_text.cget("font"))
+            code_font.configure(family="Courier", size=10)
+            self.log_text.tag_configure("bold", font=bold_font)
+            self.log_text.tag_configure("code", font=code_font, background="#2b2b2b", foreground="#dcdcdc")
+        except Exception:
+            # fallback to simple tags if font creation fails
+            self.log_text.tag_configure("bold")
+            self.log_text.tag_configure("code", background="#2b2b2b", foreground="#dcdcdc")
         frame.after(500, self._tail_logs)
+
+        # apply theme at startup
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        dark = False
+        var = self.fields.get("ui_dark_mode")
+        if var is not None:
+            try:
+                dark = bool(var.get())
+            except Exception:
+                dark = False
+        if dark:
+            bg = "#1e1e1e"
+            fg = "#dcdcdc"
+            entry_bg = "#2b2b2b"
+        else:
+            bg = "#ffffff"
+            fg = "#000000"
+            entry_bg = "#ffffff"
+        try:
+            self.root.configure(bg=bg)
+            self.log_text.configure(bg=entry_bg, fg=fg, insertbackground=fg)
+        except Exception:
+            pass
 
     def _tail_logs(self) -> None:
         try:
@@ -226,7 +269,8 @@ class ConfigGui:
                     fh.seek(self._log_pos)
                     data = fh.read()
                     if data:
-                        self.log_text.insert(tk.END, data)
+                        # insert with simple markdown handling
+                        self._insert_markdown(data)
                         self.log_text.see(tk.END)
                         self._log_pos = fh.tell()
         except Exception:
@@ -234,6 +278,31 @@ class ConfigGui:
         finally:
             # schedule next tail
             self.root.after(500, self._tail_logs)
+
+    def _insert_markdown(self, text: str) -> None:
+        # very small subset: **bold** and `code`
+        import re
+
+        pos = 0
+        for m in re.finditer(r"\*\*(.+?)\*\*|`(.+?)`", text, flags=re.S):
+            start, end = m.span()
+            # plain text before
+            if start > pos:
+                self.log_text.insert(tk.END, text[pos:start])
+            if m.group(1):
+                # bold
+                s = m.group(1)
+                idx = self.log_text.index(tk.END)
+                self.log_text.insert(tk.END, s)
+                self.log_text.tag_add("bold", idx, self.log_text.index(tk.END))
+            elif m.group(2):
+                s = m.group(2)
+                idx = self.log_text.index(tk.END)
+                self.log_text.insert(tk.END, s)
+                self.log_text.tag_add("code", idx, self.log_text.index(tk.END))
+            pos = end
+        if pos < len(text):
+            self.log_text.insert(tk.END, text[pos:])
 
     def _start_bot(self) -> None:
         import sys
@@ -265,4 +334,13 @@ class ConfigGui:
 
 
 def run_setup_gui(config_path: Path) -> None:
-    ConfigGui(config_path).run()
+    try:
+        ConfigGui(config_path).run()
+    except KeyboardInterrupt:
+        # Graceful exit on Ctrl-C
+        try:
+            import sys
+
+            sys.exit(0)
+        except Exception:
+            return

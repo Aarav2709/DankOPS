@@ -14,14 +14,45 @@ from .config import AppConfig, load_config
 from .engine import FarmEngine
 
 
+@commands.command(name="farm_test")
+async def farm_test_text(ctx: commands.Context, *, content: str) -> None:
+    """Fallback text command to send a test command and wait for Dank Memer reply.
+
+    Usage: `!farm_test pls fish`
+    """
+    bot = ctx.bot
+    if not isinstance(bot, DankOpsBot):
+        return
+    if not bot.is_owner(getattr(ctx.author, "id", 0)):
+        await ctx.send("Not authorized")
+        return
+    await ctx.send("Sending test command...")
+    try:
+        reply = await bot.send_and_wait_for_reply(content)
+    except Exception as exc:
+        await ctx.send(f"Error while sending: {exc}")
+        return
+    if reply is None:
+        await ctx.send("No Dank Memer reply detected within timeout.")
+    else:
+        text = reply.content or "(embed/unknown content)"
+        await ctx.send(f"Detected reply: {text}")
+
+
 class DankOpsBot(commands.Bot):
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, force_disable_message_content: bool = False):
+        # Load configuration first so we can decide whether to request message_content intent
+        self.config_path = config_path
+        self.config: AppConfig = load_config(config_path)
         intents = discord.Intents.default()
         intents.guilds = True
         intents.messages = True
+        # Only enable message_content intent when explicitly enabled in config
+        use_msg_content = bool(getattr(self.config, "use_message_content_intent", False))
+        if force_disable_message_content:
+            use_msg_content = False
+        intents.message_content = use_msg_content
         super().__init__(command_prefix="!", intents=intents)
-        self.config_path = config_path
-        self.config: AppConfig = load_config(config_path)
         self.engine = FarmEngine(self.config, self._send_farm_message)
         self.log = logging.getLogger("dankops")
 
@@ -32,6 +63,11 @@ class DankOpsBot(commands.Bot):
         self.tree.add_command(farm_run_once)
         self.tree.add_command(farm_reload)
         self.tree.add_command(farm_create_webhook)
+        # Register legacy prefix commands as a fallback when slash commands are unavailable
+        try:
+            self.add_command(farm_test_text)
+        except Exception:
+            self.log.exception("Failed to register text fallback commands")
         # Try to register commands to the guild that contains the configured target channel
         guild_obj = None
         try:
@@ -96,15 +132,59 @@ class DankOpsBot(commands.Bot):
         await channel.send(content)
         self.log.info("Sent message to channel %s: %s", channel.id if getattr(channel,'id',None) else 'unknown', content)
 
+    async def send_and_wait_for_reply(self, content: str, timeout: Optional[float] = None) -> Optional[discord.Message]:
+        """Send a farm message (webhook or channel) and wait for Dank Memer reply.
+
+        Returns the reply message if seen within timeout, otherwise None.
+        """
+        cfg = self.config
+        timeout = timeout if timeout is not None else float(getattr(cfg, "wait_for_reply_timeout_seconds", 12.0))
+        # Send
+        await self._send_farm_message(content)
+
+        # Wait for a message authored by Dank Memer in the same channel
+        DANK_MEMER_ID = 270904126974590976
+
+        def _check(m: discord.Message) -> bool:
+            try:
+                return (
+                    m.author is not None
+                    and getattr(m.author, "id", None) == DANK_MEMER_ID
+                    and cfg.target_channel_id
+                    and getattr(m.channel, "id", None) == cfg.target_channel_id
+                )
+            except Exception:
+                return False
+
+        try:
+            msg = await self.wait_for("message", check=_check, timeout=timeout)
+            self.log.info("Detected Dank Memer reply (id=%s): %s", getattr(msg, 'id', None), getattr(msg, 'content', None))
+            return msg
+        except Exception:
+            self.log.info("No Dank Memer reply seen within %.1fs", timeout)
+            return None
+
     async def on_message(self, message: discord.Message) -> None:
         # Log messages in target channel and detect Dank Memer replies
         try:
+            # ignore our own messages
+            if message.author and message.author.id == getattr(self.user, 'id', None):
+                return
+
             if self.config.target_channel_id and message.channel.id == self.config.target_channel_id:
                 author_id = getattr(message.author, 'id', None)
-                self.log.info("Incoming message in target channel from %s (%s): %s", getattr(message.author,'name',str(author_id)), author_id, message.content)
-                # Dank Memer official ID (common) - also log any messages from that author
+                content = getattr(message, 'content', '') or ''
+                # also consider embeds text
+                if not content and message.embeds:
+                    try:
+                        content = ' '.join(e.description or '' for e in message.embeds if getattr(e, 'description', None))
+                    except Exception:
+                        content = ''
+
+                self.log.info("Incoming message in target channel from %s (%s): %s", getattr(message.author,'name',str(author_id)), author_id, content)
+                # Dank Memer official ID
                 if author_id == 270904126974590976:
-                    await self._post_status(f"Dank Memer replied: {message.content}")
+                    self.log.info("Detected Dank Memer reply: %s", content)
         except Exception:
             self.log.exception("Error in on_message handler")
         finally:
@@ -254,6 +334,33 @@ async def farm_reload(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("Config reloaded")
 
 
+@app_commands.command(name="farm_test", description="Send a test command and wait for Dank Memer reply")
+@app_commands.describe(content="Message content to send (e.g. 'pls fish')")
+async def farm_test(interaction: discord.Interaction, content: str) -> None:
+    bot = interaction.client
+    if not isinstance(bot, DankOpsBot):
+        return
+    if not await _check_owner(interaction):
+        await interaction.response.send_message("Not authorized", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    # Ensure target channel is set
+    if bot.config.target_channel_id == 0:
+        await interaction.followup.send("target_channel_id not set in config", ephemeral=True)
+        return
+    # Send and wait
+    try:
+        reply = await bot.send_and_wait_for_reply(content)
+    except Exception as exc:
+        await interaction.followup.send(f"Error while sending: {exc}", ephemeral=True)
+        return
+    if reply is None:
+        await interaction.followup.send("No Dank Memer reply detected within timeout.", ephemeral=True)
+    else:
+        text = reply.content or "(embed/unknown content)"
+        await interaction.followup.send(f"Detected reply: {text}", ephemeral=True)
+
+
 @app_commands.command(name="farm_list_commands", description="List registered farm commands for the current guild")
 async def farm_list_commands(interaction: discord.Interaction) -> None:
     bot = interaction.client
@@ -296,7 +403,23 @@ def run_bot(config_path: Path) -> None:
     if not cfg.bot_token.strip():
         raise RuntimeError("bot_token is empty in config")
     bot = DankOpsBot(config_path)
-    bot.run(cfg.bot_token)
+    try:
+        bot.run(cfg.bot_token)
+    except discord.errors.PrivilegedIntentsRequired:
+        msg = (
+            "Privileged Gateway Intents are required by the bot configuration. "
+            "Attempting fallback by disabling message content intent and restarting. "
+            "If you need message content access, enable 'Message Content Intent' in the Discord Developer Portal for your application."
+        )
+        logging.getLogger("dankops").exception(msg)
+        print(msg)
+        # Retry once without requesting message content intent
+        bot = DankOpsBot(config_path, force_disable_message_content=True)
+        try:
+            bot.run(cfg.bot_token)
+        except Exception:
+            logging.getLogger("dankops").exception("Fallback run failed")
+            raise
 
 
 async def run_bot_async(config_path: Path) -> None:
@@ -304,5 +427,16 @@ async def run_bot_async(config_path: Path) -> None:
     if not cfg.bot_token.strip():
         raise RuntimeError("bot_token is empty in config")
     bot = DankOpsBot(config_path)
-    async with bot:
-        await bot.start(cfg.bot_token)
+    try:
+        async with bot:
+            await bot.start(cfg.bot_token)
+    except discord.errors.PrivilegedIntentsRequired:
+        msg = (
+            "Privileged Gateway Intents are required by the bot configuration. "
+            "Retrying without message content intent."
+        )
+        logging.getLogger("dankops").exception(msg)
+        print(msg)
+        bot = DankOpsBot(config_path, force_disable_message_content=True)
+        async with bot:
+            await bot.start(cfg.bot_token)
