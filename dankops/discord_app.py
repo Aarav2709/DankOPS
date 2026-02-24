@@ -8,6 +8,7 @@ import aiohttp
 import discord
 from discord import app_commands, Webhook
 from discord.ext import commands
+from typing import Optional
 
 from .config import AppConfig, load_config
 from .engine import FarmEngine
@@ -53,6 +54,21 @@ class DankOpsBot(commands.Bot):
 
     async def on_ready(self) -> None:
         self.log.info("Connected as %s", self.user)
+        # Log registered commands for debugging
+        try:
+            guild_obj = None
+            if self.config.target_channel_id:
+                ch = await self.fetch_channel(self.config.target_channel_id)
+                if getattr(ch, "guild", None) is not None:
+                    guild_obj = discord.Object(id=ch.guild.id)
+            if guild_obj is not None:
+                cmds = await self.tree.fetch_commands(guild=guild_obj)
+                self.log.info("Registered commands in guild %s: %s", guild_obj.id, [c.name for c in cmds])
+            else:
+                cmds = await self.tree.fetch_commands()
+                self.log.info("Registered global commands: %s", [c.name for c in cmds])
+        except Exception:
+            self.log.exception("Failed to list registered commands")
         await self.change_presence(status=self._presence_value())
         if self.config.auto_start:
             await self.engine.start()
@@ -69,6 +85,8 @@ class DankOpsBot(commands.Bot):
             async with aiohttp.ClientSession() as session:
                 webhook = Webhook.from_url(url, adapter=discord.AsyncWebhookAdapter(session))
                 await webhook.send(content)
+            self.log.info("Sent via webhook to %s: %s", url, content)
+            await self._post_status(f"Sent via webhook: {content}")
             return
 
         channel = self.get_channel(self.config.target_channel_id)
@@ -77,6 +95,22 @@ class DankOpsBot(commands.Bot):
         if not isinstance(channel, discord.abc.Messageable):
             raise RuntimeError("Target channel is not messageable")
         await channel.send(content)
+        self.log.info("Sent message to channel %s: %s", channel.id if getattr(channel,'id',None) else 'unknown', content)
+        await self._post_status(f"Sent: {content}")
+
+    async def on_message(self, message: discord.Message) -> None:
+        # Log messages in target channel and detect Dank Memer replies
+        try:
+            if self.config.target_channel_id and message.channel.id == self.config.target_channel_id:
+                author_id = getattr(message.author, 'id', None)
+                self.log.info("Incoming message in target channel from %s (%s): %s", getattr(message.author,'name',str(author_id)), author_id, message.content)
+                # Dank Memer official ID (common) - also log any messages from that author
+                if author_id == 270904126974590976:
+                    await self._post_status(f"Dank Memer replied: {message.content}")
+        except Exception:
+            self.log.exception("Error in on_message handler")
+        finally:
+            await super().on_message(message)
 
     async def _post_status(self, content: str) -> None:
         channel_id = self.config.status_channel_id or self.config.target_channel_id
