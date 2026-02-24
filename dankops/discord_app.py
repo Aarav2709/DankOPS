@@ -31,7 +31,25 @@ class DankOpsBot(commands.Bot):
         self.tree.add_command(farm_run_once)
         self.tree.add_command(farm_reload)
         self.tree.add_command(farm_create_webhook)
-        await self.tree.sync()
+        # Try to register commands to the guild that contains the configured target channel
+        guild_obj = None
+        try:
+            if self.config.target_channel_id:
+                ch = await self.fetch_channel(self.config.target_channel_id)
+                if getattr(ch, "guild", None) is not None:
+                    guild_obj = discord.Object(id=ch.guild.id)
+        except Exception:
+            guild_obj = None
+
+        if guild_obj is not None:
+            try:
+                await self.tree.sync(guild=guild_obj)
+                self.log.info("Synced commands to guild %s", guild_obj.id)
+            except Exception:
+                await self.tree.sync()
+                self.log.info("Falling back to global command sync")
+        else:
+            await self.tree.sync()
 
     async def on_ready(self) -> None:
         self.log.info("Connected as %s", self.user)
@@ -113,7 +131,7 @@ async def farm_create_webhook(interaction: discord.Interaction) -> None:
     save_config(bot.config_path, bot.config)
     await interaction.response.send_message("Webhook created and saved to config", ephemeral=True)
 
- 
+
 
 
 async def _check_owner(interaction: discord.Interaction) -> bool:
@@ -202,6 +220,30 @@ async def farm_reload(interaction: discord.Interaction) -> None:
     bot.engine.update_config(bot.config)
     await bot.change_presence(status=bot._presence_value())
     await interaction.response.send_message("Config reloaded")
+
+
+@app_commands.command(name="farm_list_commands", description="List registered farm commands for the current guild")
+async def farm_list_commands(interaction: discord.Interaction) -> None:
+    bot = interaction.client
+    if not isinstance(bot, DankOpsBot):
+        return
+    guild_obj = None
+    try:
+        ch = await bot.fetch_channel(bot.config.target_channel_id)
+        if getattr(ch, "guild", None) is not None:
+            guild_obj = discord.Object(id=ch.guild.id)
+    except Exception:
+        guild_obj = None
+
+    try:
+        if guild_obj is not None:
+            cmds = await bot.tree.fetch_commands(guild=guild_obj)
+        else:
+            cmds = await bot.tree.fetch_commands()
+    except Exception:
+        cmds = []
+    names = [c.name for c in cmds]
+    await interaction.response.send_message("Registered commands: " + (", ".join(names) if names else "(none)"), ephemeral=True)
 
 
 def run_bot(config_path: Path) -> None:
