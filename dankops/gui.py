@@ -50,12 +50,14 @@ class ConfigGui:
         self.fields["target_channel_id"] = tk.StringVar(value=str(self.config.target_channel_id))
         self.fields["status_channel_id"] = tk.StringVar(value=str(self.config.status_channel_id))
         self.fields["presence"] = tk.StringVar(value=self.config.presence)
+        self.fields["webhook_url"] = tk.StringVar(value=self.config.webhook_url)
         self.fields["auto_start"] = tk.BooleanVar(value=self.config.auto_start)
         self._add_row(frame, 0, "Bot Token", self.fields["bot_token"])
         self._add_row(frame, 1, "Owner User ID", self.fields["owner_user_id"])
         self._add_row(frame, 2, "Target Channel ID", self.fields["target_channel_id"])
         self._add_row(frame, 3, "Status Channel ID", self.fields["status_channel_id"])
         self._add_row(frame, 4, "Presence online|idle|dnd|invisible", self.fields["presence"])
+        self._add_row(frame, 5, "Webhook URL (optional)", self.fields["webhook_url"])
         ttk.Checkbutton(frame, text="Auto Start Scheduler", variable=self.fields["auto_start"]).grid(row=5, column=1, sticky="w", padx=8, pady=6)
 
     def _build_scheduler(self, frame: ttk.Frame) -> None:
@@ -189,6 +191,7 @@ class ConfigGui:
                 target_channel_id=self._coerce_int("target_channel_id"),
                 status_channel_id=self._coerce_int("status_channel_id"),
                 presence=str(self.fields["presence"].get()).strip().lower(),
+                webhook_url=str(self.fields["webhook_url"].get()).strip(),
                 auto_start=bool(self.fields["auto_start"].get()),
                 break_mode=bool(self.fields["break_mode"].get()),
                 break_after_min_minutes=self._coerce_float("break_after_min_minutes"),

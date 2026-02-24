@@ -27,6 +27,7 @@ class AppConfig:
     target_channel_id: int = 0
     status_channel_id: int = 0
     presence: str = "online"
+    webhook_url: str = ""
     auto_start: bool = False
     break_mode: bool = True
     break_after_min_minutes: float = 45.0
@@ -87,6 +88,7 @@ def _config_from_any(raw: dict[str, Any]) -> AppConfig:
         target_channel_id=int(raw.get("target_channel_id", base.target_channel_id) or 0),
         status_channel_id=int(raw.get("status_channel_id", base.status_channel_id) or 0),
         presence=str(raw.get("presence", base.presence)),
+        webhook_url=str(raw.get("webhook_url", base.webhook_url)),
         auto_start=bool(raw.get("auto_start", base.auto_start)),
         break_mode=bool(raw.get("break_mode", base.break_mode)),
         break_after_min_minutes=float(raw.get("break_after_min_minutes", base.break_after_min_minutes)),

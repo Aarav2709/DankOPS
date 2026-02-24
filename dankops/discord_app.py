@@ -4,8 +4,9 @@ import datetime as dt
 import logging
 from pathlib import Path
 
+import aiohttp
 import discord
-from discord import app_commands
+from discord import app_commands, Webhook
 from discord.ext import commands
 
 from .config import AppConfig, load_config
@@ -29,6 +30,7 @@ class DankOpsBot(commands.Bot):
         self.tree.add_command(farm_status)
         self.tree.add_command(farm_run_once)
         self.tree.add_command(farm_reload)
+        self.tree.add_command(farm_create_webhook)
         await self.tree.sync()
 
     async def on_ready(self) -> None:
@@ -43,12 +45,53 @@ class DankOpsBot(commands.Bot):
         await super().close()
 
     async def _send_farm_message(self, content: str) -> None:
+        # If a webhook URL is configured, post via webhook so the message is not from this bot account
+        if getattr(self.config, "webhook_url", ""):
+            url = self.config.webhook_url
+            async with aiohttp.ClientSession() as session:
+                webhook = Webhook.from_url(url, adapter=discord.AsyncWebhookAdapter(session))
+                await webhook.send(content)
+            return
+
         channel = self.get_channel(self.config.target_channel_id)
         if channel is None:
             channel = await self.fetch_channel(self.config.target_channel_id)
         if not isinstance(channel, discord.abc.Messageable):
             raise RuntimeError("Target channel is not messageable")
         await channel.send(content)
+
+
+@app_commands.command(name="farm_create_webhook", description="Create a webhook in target channel and save to config")
+async def farm_create_webhook(interaction: discord.Interaction) -> None:
+    bot = interaction.client
+    if not isinstance(bot, DankOpsBot):
+        return
+    if bot.config.target_channel_id == 0:
+        await interaction.response.send_message("target_channel_id not set in config", ephemeral=True)
+        return
+    if not bot.is_owner(interaction.user.id):
+        await interaction.response.send_message("Not authorized", ephemeral=True)
+        return
+    channel = bot.get_channel(bot.config.target_channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(bot.config.target_channel_id)
+        except Exception:
+            await interaction.response.send_message("Could not find target channel", ephemeral=True)
+            return
+    try:
+        webhook = await channel.create_webhook(name="dankops-farm")
+    except discord.Forbidden:
+        await interaction.response.send_message("Bot lacks Manage Webhooks permission in target channel", ephemeral=True)
+        return
+    except Exception as exc:
+        await interaction.response.send_message(f"Failed to create webhook: {exc}", ephemeral=True)
+        return
+    bot.config.webhook_url = webhook.url
+    from .config import save_config
+
+    save_config(bot.config_path, bot.config)
+    await interaction.response.send_message("Webhook created and saved to config", ephemeral=True)
 
     async def _post_status(self, content: str) -> None:
         channel_id = self.config.status_channel_id or self.config.target_channel_id
