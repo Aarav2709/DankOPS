@@ -72,7 +72,7 @@ class DankOpsBot(commands.Bot):
         await self.change_presence(status=self._presence_value())
         if self.config.auto_start:
             await self.engine.start()
-            await self._post_status("Farm engine auto start enabled and running")
+            self.log.info("Farm engine auto start enabled and running")
 
     async def close(self) -> None:
         await self.engine.stop()
@@ -86,7 +86,6 @@ class DankOpsBot(commands.Bot):
                 webhook = Webhook.from_url(url, adapter=discord.AsyncWebhookAdapter(session))
                 await webhook.send(content)
             self.log.info("Sent via webhook to %s: %s", url, content)
-            await self._post_status(f"Sent via webhook: {content}")
             return
 
         channel = self.get_channel(self.config.target_channel_id)
@@ -96,7 +95,6 @@ class DankOpsBot(commands.Bot):
             raise RuntimeError("Target channel is not messageable")
         await channel.send(content)
         self.log.info("Sent message to channel %s: %s", channel.id if getattr(channel,'id',None) else 'unknown', content)
-        await self._post_status(f"Sent: {content}")
 
     async def on_message(self, message: discord.Message) -> None:
         # Log messages in target channel and detect Dank Memer replies
@@ -281,6 +279,18 @@ async def farm_list_commands(interaction: discord.Interaction) -> None:
 
 
 def run_bot(config_path: Path) -> None:
+    # Ensure logs directory exists and write logs to file for GUI tailing
+    import os
+    os.makedirs("logs", exist_ok=True)
+    fh = logging.FileHandler("logs/dankops.log", encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    fh.setFormatter(formatter)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    # avoid duplicate handlers if present
+    if not any(isinstance(h, logging.FileHandler) and h.baseFilename.endswith("dankops.log") for h in root_logger.handlers if hasattr(h, 'baseFilename')):
+        root_logger.addHandler(fh)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     cfg = load_config(config_path)
     if not cfg.bot_token.strip():

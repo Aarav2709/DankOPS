@@ -25,19 +25,24 @@ class ConfigGui:
         general = ttk.Frame(notebook)
         scheduler = ttk.Frame(notebook)
         commands = ttk.Frame(notebook)
+        logs = ttk.Frame(notebook)
 
         notebook.add(general, text="General")
         notebook.add(scheduler, text="Scheduler")
         notebook.add(commands, text="Commands")
+        notebook.add(logs, text="Logs")
 
         self._build_general(general)
         self._build_scheduler(scheduler)
         self._build_commands(commands)
+        self._build_logs(logs)
 
         footer = ttk.Frame(self.root)
         footer.pack(fill=tk.X, padx=10, pady=(0, 10))
         ttk.Button(footer, text="Save", command=self._save).pack(side=tk.RIGHT)
         ttk.Button(footer, text="Reload", command=self._reload).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(footer, text="Start Bot", command=self._start_bot).pack(side=tk.LEFT)
+        ttk.Button(footer, text="Stop Bot", command=self._stop_bot).pack(side=tk.LEFT, padx=(8, 0))
 
     def _add_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.Variable) -> None:
         ttk.Label(parent, text=label, width=30).grid(row=row, column=0, padx=8, pady=6, sticky="w")
@@ -48,16 +53,12 @@ class ConfigGui:
         self.fields["bot_token"] = tk.StringVar(value=self.config.bot_token)
         self.fields["owner_user_id"] = tk.StringVar(value=str(self.config.owner_user_id))
         self.fields["target_channel_id"] = tk.StringVar(value=str(self.config.target_channel_id))
-        self.fields["status_channel_id"] = tk.StringVar(value=str(self.config.status_channel_id))
-        self.fields["presence"] = tk.StringVar(value=self.config.presence)
-        self.fields["webhook_url"] = tk.StringVar(value=self.config.webhook_url)
+        # Hidden fields `status_channel_id`, `presence`, `webhook_url` are preserved but not exposed in GUI
         self.fields["auto_start"] = tk.BooleanVar(value=self.config.auto_start)
         self._add_row(frame, 0, "Bot Token", self.fields["bot_token"])
         self._add_row(frame, 1, "Owner User ID", self.fields["owner_user_id"])
         self._add_row(frame, 2, "Target Channel ID", self.fields["target_channel_id"])
-        self._add_row(frame, 3, "Status Channel ID", self.fields["status_channel_id"])
-        self._add_row(frame, 4, "Presence online|idle|dnd|invisible", self.fields["presence"])
-        self._add_row(frame, 5, "Webhook URL (optional)", self.fields["webhook_url"])
+        # status_channel_id, presence and webhook_url are intentionally hidden in this UI
         ttk.Checkbutton(frame, text="Auto Start Scheduler", variable=self.fields["auto_start"]).grid(row=5, column=1, sticky="w", padx=8, pady=6)
 
     def _build_scheduler(self, frame: ttk.Frame) -> None:
@@ -189,9 +190,10 @@ class ConfigGui:
                 bot_token=str(self.fields["bot_token"].get()).strip(),
                 owner_user_id=self._coerce_int("owner_user_id"),
                 target_channel_id=self._coerce_int("target_channel_id"),
-                status_channel_id=self._coerce_int("status_channel_id"),
-                presence=str(self.fields["presence"].get()).strip().lower(),
-                webhook_url=str(self.fields["webhook_url"].get()).strip(),
+                # preserve hidden values from existing config
+                status_channel_id=self.config.status_channel_id,
+                presence=self.config.presence,
+                webhook_url=self.config.webhook_url,
                 auto_start=bool(self.fields["auto_start"].get()),
                 break_mode=bool(self.fields["break_mode"].get()),
                 break_after_min_minutes=self._coerce_float("break_after_min_minutes"),
@@ -208,6 +210,55 @@ class ConfigGui:
         save_config(self.config_path, cfg)
         self.config = cfg
         messagebox.showinfo("Saved", f"Configuration saved to {self.config_path}")
+
+    def _build_logs(self, frame: ttk.Frame) -> None:
+        frame.columnconfigure(0, weight=1)
+        self.log_text = tk.Text(frame, height=20, wrap="none")
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.log_path = Path("logs/dankops.log")
+        self._log_pos = 0
+        frame.after(500, self._tail_logs)
+
+    def _tail_logs(self) -> None:
+        try:
+            if self.log_path.exists():
+                with self.log_path.open("r", encoding="utf-8", errors="ignore") as fh:
+                    fh.seek(self._log_pos)
+                    data = fh.read()
+                    if data:
+                        self.log_text.insert(tk.END, data)
+                        self.log_text.see(tk.END)
+                        self._log_pos = fh.tell()
+        except Exception:
+            pass
+        finally:
+            # schedule next tail
+            self.root.after(500, self._tail_logs)
+
+    def _start_bot(self) -> None:
+        import sys
+        import subprocess
+
+        if getattr(self, "_bot_process", None) is not None:
+            messagebox.showinfo("Info", "Bot process already running")
+            return
+        python_exe = sys.executable
+        cmd = [python_exe, "bot.py", "run", "--config", str(self.config_path)]
+        try:
+            self._bot_process = subprocess.Popen(cmd)
+            messagebox.showinfo("Started", "Bot started as background process")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to start bot: {e}")
+
+    def _stop_bot(self) -> None:
+        proc = getattr(self, "_bot_process", None)
+        if proc is None:
+            messagebox.showinfo("Info", "No bot process running")
+            return
+        proc.terminate()
+        proc.wait(timeout=5)
+        self._bot_process = None
+        messagebox.showinfo("Stopped", "Bot process stopped")
 
     def run(self) -> None:
         self.root.mainloop()

@@ -44,12 +44,13 @@ def default_commands() -> dict[str, CommandProfile]:
         "dig": CommandProfile(True, "pls dig", 35, 50),
         "fish": CommandProfile(True, "pls fish", 35, 50),
         "hunt": CommandProfile(True, "pls hunt", 35, 50),
+        "daily": CommandProfile(True, "pls daily", 86400, 90000),
+        "monthly": CommandProfile(False, "pls monthly", 2592000, 2629800),
         "search": CommandProfile(False, "pls search", 40, 60),
         "crime": CommandProfile(False, "pls crime", 45, 70),
         "postmemes": CommandProfile(False, "pls postmemes", 40, 60),
         "highlow": CommandProfile(False, "pls hl", 25, 35),
         "deposit": CommandProfile(False, "pls deposit all", 60, 90),
-        "daily": CommandProfile(False, "pls daily", 86400, 90000),
     }
 
 
