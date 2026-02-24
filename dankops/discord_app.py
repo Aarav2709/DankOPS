@@ -60,6 +60,26 @@ class DankOpsBot(commands.Bot):
             raise RuntimeError("Target channel is not messageable")
         await channel.send(content)
 
+    async def _post_status(self, content: str) -> None:
+        channel_id = self.config.status_channel_id or self.config.target_channel_id
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            channel = await self.fetch_channel(channel_id)
+        if isinstance(channel, discord.abc.Messageable):
+            await channel.send(content)
+
+    def _presence_value(self) -> discord.Status:
+        options = {
+            "online": discord.Status.online,
+            "idle": discord.Status.idle,
+            "dnd": discord.Status.dnd,
+            "invisible": discord.Status.invisible,
+        }
+        return options.get(self.config.presence.lower(), discord.Status.online)
+
+    def is_owner(self, user_id: int) -> bool:
+        return self.config.owner_user_id == 0 or self.config.owner_user_id == user_id
+
 
 @app_commands.command(name="farm_create_webhook", description="Create a webhook in target channel and save to config")
 async def farm_create_webhook(interaction: discord.Interaction) -> None:
@@ -93,25 +113,7 @@ async def farm_create_webhook(interaction: discord.Interaction) -> None:
     save_config(bot.config_path, bot.config)
     await interaction.response.send_message("Webhook created and saved to config", ephemeral=True)
 
-    async def _post_status(self, content: str) -> None:
-        channel_id = self.config.status_channel_id or self.config.target_channel_id
-        channel = self.get_channel(channel_id)
-        if channel is None:
-            channel = await self.fetch_channel(channel_id)
-        if isinstance(channel, discord.abc.Messageable):
-            await channel.send(content)
-
-    def _presence_value(self) -> discord.Status:
-        options = {
-            "online": discord.Status.online,
-            "idle": discord.Status.idle,
-            "dnd": discord.Status.dnd,
-            "invisible": discord.Status.invisible,
-        }
-        return options.get(self.config.presence.lower(), discord.Status.online)
-
-    def is_owner(self, user_id: int) -> bool:
-        return self.config.owner_user_id == 0 or self.config.owner_user_id == user_id
+ 
 
 
 async def _check_owner(interaction: discord.Interaction) -> bool:
